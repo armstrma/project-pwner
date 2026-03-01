@@ -1,0 +1,7 @@
+node_modules
+.pnpm-store
+.env
+apps/api/.env
+dist
+coverage
+.vercel

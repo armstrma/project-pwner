@@ -1,0 +1,13 @@
+{
+  "name": "project-pwner",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "dev": "pnpm --filter @project-pwner/api dev",
+    "build": "pnpm -r build",
+    "test": "pnpm --filter @project-pwner/api test",
+    "lint": "pnpm -r lint",
+    "db:migrate": "pnpm --filter @project-pwner/api db:migrate"
+  }
+}

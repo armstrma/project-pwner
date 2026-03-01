@@ -1,0 +1,98 @@
+name: Preview + Thread Update
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Deploy preview to Vercel (best effort)
+        id: deploy
+        working-directory: apps/web
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          set +e
+
+          if [[ -z "$VERCEL_TOKEN" || -z "$VERCEL_ORG_ID" || -z "$VERCEL_PROJECT_ID" ]]; then
+            echo "missing_secrets=true" >> "$GITHUB_OUTPUT"
+            echo "preview_url=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          npm i -g vercel@latest
+          vercel pull --yes --environment=preview --token "$VERCEL_TOKEN"
+          vercel build --token "$VERCEL_TOKEN"
+          PREVIEW_URL=$(vercel deploy --prebuilt --token "$VERCEL_TOKEN")
+          RC=$?
+
+          if [[ $RC -eq 0 ]]; then
+            echo "preview_url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
+            echo "missing_secrets=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "preview_url=" >> "$GITHUB_OUTPUT"
+          echo "missing_secrets=false" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Post thread update to Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_THREAD_ID: ${{ secrets.DISCORD_THREAD_ID }}
+          PREVIEW_URL: ${{ steps.deploy.outputs.preview_url }}
+          MISSING_SECRETS: ${{ steps.deploy.outputs.missing_secrets }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set +e
+
+          if [[ -z "$DISCORD_WEBHOOK_URL" ]]; then
+            echo "DISCORD_WEBHOOK_URL not configured. Skipping thread post."
+            exit 0
+          fi
+
+          TARGET_URL="$DISCORD_WEBHOOK_URL"
+          if [[ -n "$DISCORD_THREAD_ID" ]]; then
+            TARGET_URL="${DISCORD_WEBHOOK_URL}?wait=true&thread_id=${DISCORD_THREAD_ID}"
+          fi
+
+          if [[ "$MISSING_SECRETS" == "true" ]]; then
+            CONTENT="🟡 PR #${PR_NUMBER:-N/A} (${PR_TITLE:-manual run})\nPreview deploy skipped (missing Vercel secrets).\nWorkflow: ${RUN_URL}"
+          elif [[ -n "$PREVIEW_URL" ]]; then
+            CONTENT="🟢 PR #${PR_NUMBER:-N/A} (${PR_TITLE:-manual run})\nPreview: ${PREVIEW_URL}\nWorkflow: ${RUN_URL}"
+          else
+            CONTENT="🔴 PR #${PR_NUMBER:-N/A} (${PR_TITLE:-manual run})\nPreview deploy failed.\nWorkflow: ${RUN_URL}"
+          fi
+
+          jq -n --arg content "$CONTENT" '{content:$content}' \
+            | curl -sS -X POST -H "Content-Type: application/json" -d @- "$TARGET_URL" >/dev/null
+
+          exit 0
